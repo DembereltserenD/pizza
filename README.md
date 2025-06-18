@@ -1,4 +1,15 @@
 ## ✅ MVP Plan – “Гоё пицца” 🍕
+![image](https://github.com/user-attachments/assets/b0d67cbe-22b6-4923-bc1b-797fcac1f4b2)
+![image](https://github.com/user-attachments/assets/39053e1b-4006-4885-a23c-6377c9729a6d)
+![image](https://github.com/user-attachments/assets/c182e932-ab64-4ca5-9c31-680390eed9b2)
+![image](https://github.com/user-attachments/assets/fc5e167e-c075-4acf-8bf5-79d3399b28ce)
+![image](https://github.com/user-attachments/assets/ded8e1d3-53fb-433c-9392-bd7fdec9fcc9)
+![image](https://github.com/user-attachments/assets/bffc2fcf-9f5b-42f0-acf2-59583baa8cf1)
+
+
+
+
+
 
 | Feature              | Description                                                      |
 | -------------------- | ---------------------------------------------------------------- |
