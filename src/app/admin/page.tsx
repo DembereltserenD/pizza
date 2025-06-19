@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -58,7 +59,7 @@ import {
   Plus,
   Edit,
   Trash2,
-  Pizza,
+  Pizza as PizzaIcon,
   UserPlus,
   Shield,
   ShoppingCart,
@@ -101,6 +102,11 @@ interface UserWithRole {
   created_at: string;
 }
 
+// Debug logging helper for admin dashboard
+const adminDebugLog = (message: string, data?: any) => {
+  console.log(`[Admin Dashboard Debug] ${message}`, data || "");
+};
+
 function AdminDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [pizzas, setPizzas] = useState<Pizza[]>([]);
@@ -135,6 +141,7 @@ function AdminDashboard() {
   const router = useRouter();
 
   useEffect(() => {
+    adminDebugLog("Admin dashboard component mounted");
     fetchData();
     setupRealtimeSubscription();
   }, []);
@@ -145,55 +152,101 @@ function AdminDashboard() {
 
   const fetchData = async () => {
     try {
-      if (!supabase) return;
+      adminDebugLog("Starting data fetch");
+      if (!supabase) {
+        adminDebugLog("Supabase client not initialized");
+        setLoading(false);
+        return;
+      }
 
       // Fetch orders
+      adminDebugLog("Fetching orders from database");
       const { data: ordersData, error: ordersError } = await supabase
         .from("orders")
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (ordersError) throw ordersError;
+      if (ordersError) {
+        adminDebugLog("Error fetching orders", {
+          error: ordersError.message,
+          code: ordersError.code,
+        });
+        throw ordersError;
+      }
+      adminDebugLog("Orders fetched successfully", {
+        count: ordersData?.length || 0,
+      });
       setOrders(ordersData || []);
 
       // Fetch pizzas
+      adminDebugLog("Fetching pizzas from database");
       const { data: pizzasData, error: pizzasError } = await supabase
         .from("pizzas")
         .select("*");
 
-      if (pizzasError) throw pizzasError;
+      if (pizzasError) {
+        adminDebugLog("Error fetching pizzas", {
+          error: pizzasError.message,
+          code: pizzasError.code,
+        });
+        throw pizzasError;
+      }
+      adminDebugLog("Pizzas fetched successfully", {
+        count: pizzasData?.length || 0,
+      });
       setPizzas(pizzasData || []);
 
-      // Fetch users with roles
-      const { data: usersData, error: usersError } =
-        await supabase.auth.admin.listUsers();
+      // Fetch users with roles - only if user has admin privileges
+      try {
+        adminDebugLog("Fetching users with admin privileges");
+        const { data: usersData, error: usersError } =
+          await supabase.auth.admin.listUsers();
 
-      if (usersError) {
-        console.error("Error fetching users:", usersError);
-      } else {
-        // Get user roles
-        const { data: rolesData, error: rolesError } = await supabase
-          .from("user_roles")
-          .select("*");
-
-        if (rolesError) {
-          console.error("Error fetching user roles:", rolesError);
+        if (usersError) {
+          adminDebugLog("Error fetching users", { error: usersError.message });
+          // Don't throw error here as this might be a permission issue
         } else {
-          const usersWithRoles = usersData.users.map((user) => {
-            const userRole = rolesData?.find((role) => role.id === user.id);
-            return {
-              id: user.id,
-              email: user.email || "",
-              role: userRole?.role || ("delivery" as "admin" | "delivery"),
-              created_at: user.created_at,
-            };
+          adminDebugLog("Users fetched successfully", {
+            count: usersData.users.length,
           });
-          setUsers(usersWithRoles);
+          // Get user roles
+          adminDebugLog("Fetching user roles from database");
+          const { data: rolesData, error: rolesError } = await supabase
+            .from("user_roles")
+            .select("*");
+
+          if (rolesError) {
+            adminDebugLog("Error fetching user roles", {
+              error: rolesError.message,
+              code: rolesError.code,
+            });
+          } else {
+            adminDebugLog("User roles fetched successfully", {
+              count: rolesData?.length || 0,
+            });
+            const usersWithRoles = usersData.users.map((user) => {
+              const userRole = rolesData?.find((role) => role.id === user.id);
+              return {
+                id: user.id,
+                email: user.email || "",
+                role: userRole?.role || ("delivery" as "admin" | "delivery"),
+                created_at: user.created_at,
+              };
+            });
+            adminDebugLog("Users with roles processed", {
+              usersWithRoles: usersWithRoles.length,
+            });
+            setUsers(usersWithRoles);
+          }
         }
+      } catch (adminError) {
+        adminDebugLog("Admin operations error", { error: adminError });
+        // Continue without user management features
       }
     } catch (error) {
-      console.error("Error fetching data:", error);
+      adminDebugLog("Error fetching data", { error });
     } finally {
+      adminDebugLog("Data fetch completed", { loading: false });
       setLoading(false);
     }
   };
@@ -218,7 +271,23 @@ function AdminDashboard() {
   };
 
   const calculateStats = () => {
-    if (!orders.length || !pizzas.length) return;
+    adminDebugLog("Calculating statistics", {
+      ordersCount: orders.length,
+      pizzasCount: pizzas.length,
+    });
+    if (!orders.length) {
+      adminDebugLog("No orders found, setting empty stats");
+      setStats({
+        totalOrders: 0,
+        totalRevenue: 0,
+        ordersToday: 0,
+        averageDeliveryTime: 0,
+        topPizzas: [],
+        frequentBuildings: [],
+        paymentSplit: { cash: 0, qpay: 0 },
+      });
+      return;
+    }
 
     const today = new Date().toDateString();
     const paidOrders = orders.filter((order) => order.is_paid);
@@ -238,7 +307,7 @@ function AdminDashboard() {
         ? deliveryTimes.reduce((a, b) => a + b, 0) / deliveryTimes.length
         : 0;
 
-    // Top pizzas
+    // Top pizzas - handle case when pizzas array might be empty
     const pizzaQuantities: { [key: string]: number } = {};
     orders.forEach((order) => {
       order.pizza_items.forEach((item) => {
@@ -250,7 +319,7 @@ function AdminDashboard() {
     const topPizzas = Object.entries(pizzaQuantities)
       .map(([pizzaId, quantity]) => {
         const pizza = pizzas.find((p) => p.id === pizzaId);
-        return { name: pizza?.name || "Unknown", quantity };
+        return { name: pizza?.name || "Unknown Pizza", quantity };
       })
       .sort((a, b) => b.quantity - a.quantity)
       .slice(0, 5);
@@ -275,12 +344,19 @@ function AdminDashboard() {
       (order) => order.payment_type === "qpay",
     ).length;
 
-    setStats({
+    // Calculate today's revenue specifically
+    const todayOrders = orders.filter(
+      (order) =>
+        new Date(order.created_at).toDateString() === today && order.is_paid,
+    );
+    const todayRevenue = todayOrders.reduce(
+      (sum, order) => sum + order.total_price,
+      0,
+    );
+
+    const finalStats = {
       totalOrders: orders.length,
-      totalRevenue: paidOrders.reduce(
-        (sum, order) => sum + order.total_price,
-        0,
-      ),
+      totalRevenue: todayRevenue, // Show today's revenue instead of total
       ordersToday: orders.filter(
         (order) => new Date(order.created_at).toDateString() === today,
       ).length,
@@ -288,7 +364,10 @@ function AdminDashboard() {
       topPizzas,
       frequentBuildings,
       paymentSplit: { cash: cashOrders, qpay: qpayOrders },
-    });
+    };
+
+    adminDebugLog("Statistics calculated", finalStats);
+    setStats(finalStats);
   };
 
   const getFilteredOrders = () => {
@@ -591,7 +670,7 @@ function AdminDashboard() {
         <div className="p-6">
           <div className="flex items-center mb-8">
             <div className="w-10 h-10 bg-red-500 rounded-full flex items-center justify-center mr-3">
-              <Pizza className="h-6 w-6 text-white" />
+              <PizzaIcon className="h-6 w-6 text-white" />
             </div>
             <div>
               <h1 className="text-xl font-bold text-gray-900">Гоё Пицца</h1>
@@ -609,7 +688,7 @@ function AdminDashboard() {
               Захиалгууд
             </div>
             <div className="px-4 py-3 text-gray-600 hover:bg-gray-50 rounded-lg flex items-center cursor-pointer">
-              <Pizza className="h-5 w-5 mr-3" />
+              <PizzaIcon className="h-5 w-5 mr-3" />
               Пицца удирдах
             </div>
             <div className="px-4 py-3 text-gray-600 hover:bg-gray-50 rounded-lg flex items-center cursor-pointer">
@@ -673,7 +752,9 @@ function AdminDashboard() {
                     <p className="text-3xl font-bold text-gray-900">
                       {stats.totalOrders}
                     </p>
-                    <p className="text-sm text-green-600 mt-1">+12% өчигдөөс</p>
+                    <p className="text-sm text-blue-600 mt-1">
+                      {orders.filter((o) => o.is_paid).length} төлөгдсөн
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
                     <ShoppingCart className="h-6 w-6 text-blue-600" />
@@ -692,7 +773,9 @@ function AdminDashboard() {
                     <p className="text-3xl font-bold text-gray-900">
                       {formatPrice(stats.totalRevenue)}
                     </p>
-                    <p className="text-sm text-green-600 mt-1">+8% өчигдөөс</p>
+                    <p className="text-sm text-green-600 mt-1">
+                      {stats.ordersToday} захиалга өнөөдөр
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
                     <Banknote className="h-6 w-6 text-green-600" />
@@ -711,7 +794,10 @@ function AdminDashboard() {
                     <p className="text-3xl font-bold text-gray-900">
                       {stats.averageDeliveryTime} мин
                     </p>
-                    <p className="text-sm text-red-500 mt-1">+2 мин өчигдөөс</p>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {orders.filter((o) => o.status === "delivered").length}{" "}
+                      хүргэгдсэн
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-yellow-100 rounded-full flex items-center justify-center">
                     <Timer className="h-6 w-6 text-yellow-600" />
@@ -730,7 +816,10 @@ function AdminDashboard() {
                     <p className="text-3xl font-bold text-gray-900">
                       {users.length}
                     </p>
-                    <p className="text-sm text-gray-500 mt-1">12-с</p>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {users.filter((u) => u.role === "delivery").length}{" "}
+                      хүргэлтийн ажилтан
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
                     <Users className="h-6 w-6 text-purple-600" />
@@ -1178,7 +1267,7 @@ function AdminDashboard() {
               <div className="flex justify-between items-center">
                 <div>
                   <CardTitle className="flex items-center">
-                    <Pizza className="h-5 w-5 mr-2" />
+                    <PizzaIcon className="h-5 w-5 mr-2" />
                     Пиццаны удирдлага
                   </CardTitle>
                   <CardDescription>Нийт {pizzas.length} пицца</CardDescription>
@@ -1319,7 +1408,7 @@ function AdminDashboard() {
                           />
                         ) : (
                           <div className="w-12 h-12 bg-gray-200 rounded flex items-center justify-center">
-                            <Pizza className="h-6 w-6 text-gray-400" />
+                            <PizzaIcon className="h-6 w-6 text-gray-400" />
                           </div>
                         )}
                       </TableCell>

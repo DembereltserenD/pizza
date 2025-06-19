@@ -1,4 +1,4 @@
-import dynamic from 'next/dynamic';
+import dynamic from "next/dynamic";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
@@ -12,9 +12,13 @@ export const metadata: Metadata = {
 };
 
 const TempoInit = dynamic(
-  () => import('./client-components').then(mod => mod.TempoInit),
-  { ssr: false }
+  () => import("./client-components").then((mod) => mod.TempoInit),
+  { ssr: false },
 );
+
+const DebugPanel = dynamic(() => import("../components/DebugPanel"), {
+  ssr: false,
+});
 
 export default function RootLayout({
   children,
@@ -27,6 +31,7 @@ export default function RootLayout({
       <body className={inter.className}>
         {children}
         <TempoInit />
+        <DebugPanel />
       </body>
     </html>
   );
