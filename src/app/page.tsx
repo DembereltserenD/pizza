@@ -1,6 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
-import { supabase, Pizza, formatPrice } from "@/lib/supabase";
+import {
+  supabase,
+  Pizza,
+  Order,
+  formatPrice,
+  formatTime,
+} from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -10,6 +16,16 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   ShoppingCart,
   Plus,
@@ -17,25 +33,131 @@ import {
   Clock,
   Heart,
   Phone,
-  Search,
+  User,
+  LogIn,
+  Package,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import Link from "next/link";
 import LoginPage from "@/app/login/page";
 import Image from "next/image";
+import dynamic from "next/dynamic";
+
+// Dynamic import to avoid SSR issues with Leaflet
+const DeliveryMap = dynamic(() => import("@/components/DeliveryMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="bg-white rounded-lg p-6">
+      <div className="animate-pulse">
+        <div className="h-96 bg-gray-200 rounded-lg mb-4"></div>
+        <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+        <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+      </div>
+    </div>
+  ),
+});
 
 interface CartItem extends Pizza {
   quantity: number;
+}
+
+interface OrderWithPizzas extends Order {
+  pizzas: { pizza: Pizza; quantity: number }[];
 }
 
 export default function HomePage() {
   const [pizzas, setPizzas] = useState<Pizza[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [isVerificationStep, setIsVerificationStep] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [user, setUser] = useState<any>(null);
+  const [userOrders, setUserOrders] = useState<OrderWithPizzas[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [showOrders, setShowOrders] = useState(false);
 
   useEffect(() => {
     fetchPizzas();
     loadCartFromStorage();
+    checkUser();
   }, []);
+
+  const checkUser = async () => {
+    if (!supabase) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    setUser(user);
+
+    if (user?.phone) {
+      fetchUserOrders(user.phone);
+    }
+  };
+
+  const fetchUserOrders = async (phone: string) => {
+    if (!supabase) return;
+
+    setLoadingOrders(true);
+    try {
+      // Get orders by phone
+      const { data: ordersData, error: ordersError } = await supabase
+        .from("orders")
+        .select("*")
+        .eq("phone", phone.replace("+976", ""))
+        .order("created_at", { ascending: false })
+        .limit(5); // Show only last 5 orders
+
+      if (ordersError) throw ordersError;
+
+      if (!ordersData || ordersData.length === 0) {
+        setUserOrders([]);
+        return;
+      }
+
+      // Get all pizza IDs from orders
+      const allPizzaIds = new Set<string>();
+      ordersData.forEach((order) => {
+        order.pizza_items.forEach((item: any) => {
+          allPizzaIds.add(item.pizza_id);
+        });
+      });
+
+      // Fetch pizza details
+      const { data: pizzasData, error: pizzasError } = await supabase
+        .from("pizzas")
+        .select("*")
+        .in("id", Array.from(allPizzaIds));
+
+      if (pizzasError) throw pizzasError;
+
+      // Create pizza lookup map
+      const pizzaMap = new Map<string, Pizza>();
+      pizzasData?.forEach((pizza) => {
+        pizzaMap.set(pizza.id, pizza);
+      });
+
+      // Combine orders with pizza details
+      const ordersWithPizzas: OrderWithPizzas[] = ordersData.map((order) => ({
+        ...order,
+        pizzas: order.pizza_items.map((item: any) => ({
+          pizza: pizzaMap.get(item.pizza_id)!,
+          quantity: item.quantity,
+        })),
+      }));
+
+      setUserOrders(ordersWithPizzas);
+    } catch (error) {
+      console.error("Error fetching user orders:", error);
+    } finally {
+      setLoadingOrders(false);
+    }
+  };
 
   const fetchPizzas = async () => {
     try {
@@ -143,6 +265,117 @@ export default function HomePage() {
     return cart.reduce((total, item) => total + item.price * item.quantity, 0);
   };
 
+  const handlePhoneLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError("");
+
+    if (!supabase) {
+      setLoginError("Системийн алдаа гарлаа. Дахин оролдоно уу.");
+      setIsLoggingIn(false);
+      return;
+    }
+
+    try {
+      // Format phone number (add +976 if not present)
+      let formattedPhone = phoneNumber.trim();
+      if (!formattedPhone.startsWith("+976")) {
+        if (formattedPhone.startsWith("976")) {
+          formattedPhone = "+" + formattedPhone;
+        } else if (formattedPhone.startsWith("0")) {
+          formattedPhone = "+976" + formattedPhone.substring(1);
+        } else {
+          formattedPhone = "+976" + formattedPhone;
+        }
+      }
+
+      const { error } = await supabase.auth.signInWithOtp({
+        phone: formattedPhone,
+      });
+
+      if (error) {
+        setLoginError(
+          "SMS илгээхэд алдаа гарлаа. Утасны дугаараа шалгаад дахин оролдоно уу.",
+        );
+      } else {
+        setIsVerificationStep(true);
+        setLoginError("");
+      }
+    } catch (err) {
+      setLoginError("Системийн алдаа гарлаа. Дахин оролдоно уу.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError("");
+
+    if (!supabase) {
+      setLoginError("Системийн алдаа гарлаа. Дахин оролдоно уу.");
+      setIsLoggingIn(false);
+      return;
+    }
+
+    try {
+      // Format phone number
+      let formattedPhone = phoneNumber.trim();
+      if (!formattedPhone.startsWith("+976")) {
+        if (formattedPhone.startsWith("976")) {
+          formattedPhone = "+" + formattedPhone;
+        } else if (formattedPhone.startsWith("0")) {
+          formattedPhone = "+976" + formattedPhone.substring(1);
+        } else {
+          formattedPhone = "+976" + formattedPhone;
+        }
+      }
+
+      const { data, error } = await supabase.auth.verifyOtp({
+        phone: formattedPhone,
+        token: verificationCode,
+        type: "sms",
+      });
+
+      if (error) {
+        setLoginError("Баталгаажуулах код буруу байна. Дахин оролдоно уу.");
+      } else if (data.user) {
+        setUser(data.user);
+        setIsLoginOpen(false);
+        setIsVerificationStep(false);
+        setPhoneNumber("");
+        setVerificationCode("");
+        setLoginError("");
+
+        // Fetch user orders after successful login
+        if (data.user.phone) {
+          fetchUserOrders(data.user.phone);
+        }
+      }
+    } catch (err) {
+      setLoginError("Системийн алдаа гарлаа. Дахин оролдоно уу.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (!supabase) return;
+
+    await supabase.auth.signOut();
+    setUser(null);
+    setUserOrders([]);
+    setShowOrders(false);
+  };
+
+  const resetLoginForm = () => {
+    setIsVerificationStep(false);
+    setPhoneNumber("");
+    setVerificationCode("");
+    setLoginError("");
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-orange-50 flex items-center justify-center">
@@ -197,15 +430,130 @@ export default function HomePage() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              <Link href="/track">
-                <Button
-                  variant="outline"
-                  className="border-red-500 text-red-500 hover:bg-red-50 px-4"
+              {user ? (
+                <div className="flex items-center space-x-3">
+                  <div className="flex items-center space-x-2 text-sm text-gray-600">
+                    <User className="h-4 w-4" />
+                    <span>{user.phone}</span>
+                  </div>
+                  <Button
+                    onClick={handleLogout}
+                    variant="outline"
+                    className="text-gray-600 hover:text-gray-900"
+                  >
+                    Гарах
+                  </Button>
+                </div>
+              ) : (
+                <Dialog
+                  open={isLoginOpen}
+                  onOpenChange={(open) => {
+                    setIsLoginOpen(open);
+                    if (!open) resetLoginForm();
+                  }}
                 >
-                  <Search className="h-4 w-4 mr-2" />
-                  Захиалга хянах
-                </Button>
-              </Link>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="border-blue-500 text-blue-500 hover:bg-blue-50 px-4"
+                    >
+                      <LogIn className="h-4 w-4 mr-2" />
+                      Нэвтрэх
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle className="text-center">
+                        {isVerificationStep
+                          ? "Баталгаажуулах код"
+                          : "Утасны дугаараар нэвтрэх"}
+                      </DialogTitle>
+                      <DialogDescription className="text-center">
+                        {isVerificationStep
+                          ? `${phoneNumber} дугаарт илгээсэн 6 оронтой кодыг оруулна уу`
+                          : "Утасны дугаараа оруулснаар SMS-ээр баталгаажуулах код илгээгдэнэ"}
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    {!isVerificationStep ? (
+                      <form onSubmit={handlePhoneLogin} className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="phone">Утасны дугаар</Label>
+                          <Input
+                            id="phone"
+                            type="tel"
+                            placeholder="99123456 эсвэл +97699123456"
+                            value={phoneNumber}
+                            onChange={(e) => setPhoneNumber(e.target.value)}
+                            required
+                            className="w-full"
+                          />
+                          <p className="text-xs text-gray-500">
+                            Монгол улсын утасны дугаар оруулна уу
+                          </p>
+                        </div>
+
+                        {loginError && (
+                          <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-md text-sm">
+                            {loginError}
+                          </div>
+                        )}
+
+                        <Button
+                          type="submit"
+                          className="w-full bg-blue-500 hover:bg-blue-600 text-white"
+                          disabled={isLoggingIn}
+                        >
+                          {isLoggingIn ? "SMS илгээж байна..." : "SMS код авах"}
+                        </Button>
+                      </form>
+                    ) : (
+                      <form onSubmit={handleVerifyCode} className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="code">Баталгаажуулах код</Label>
+                          <Input
+                            id="code"
+                            type="text"
+                            placeholder="123456"
+                            value={verificationCode}
+                            onChange={(e) =>
+                              setVerificationCode(e.target.value)
+                            }
+                            required
+                            maxLength={6}
+                            className="w-full text-center text-lg tracking-widest"
+                          />
+                        </div>
+
+                        {loginError && (
+                          <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-md text-sm">
+                            {loginError}
+                          </div>
+                        )}
+
+                        <div className="flex space-x-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={resetLoginForm}
+                            className="flex-1"
+                          >
+                            Буцах
+                          </Button>
+                          <Button
+                            type="submit"
+                            className="flex-1 bg-blue-500 hover:bg-blue-600 text-white"
+                            disabled={isLoggingIn}
+                          >
+                            {isLoggingIn ? "Шалгаж байна..." : "Баталгаажуулах"}
+                          </Button>
+                        </div>
+                      </form>
+                    )}
+                  </DialogContent>
+                </Dialog>
+              )}
+
               <Link href="/cart">
                 <Button className="relative bg-red-500 hover:bg-red-600 text-white px-6">
                   <ShoppingCart className="h-4 w-4 mr-2" />
@@ -246,19 +594,124 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Order Tracking CTA */}
-          <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl p-6 mb-8 text-white text-center">
-            <h3 className="text-xl font-bold mb-2">Захиалгаа хянах уу?</h3>
-            <p className="text-blue-100 mb-4">
-              Утасны дугаараар захиалгынхаа явцыг хянаарай
-            </p>
-            <Link href="/track">
-              <Button className="bg-white text-blue-600 hover:bg-blue-50 font-semibold px-6 py-2">
-                <Search className="h-4 w-4 mr-2" />
-                Захиалга хянах
+          {/* User Orders Section */}
+          {user && (
+            <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl p-6 mb-8 text-white">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-xl font-bold mb-2">Таны захиалгууд</h3>
+                  <p className="text-blue-100">
+                    {userOrders.length > 0
+                      ? `${userOrders.length} захиалга олдлоо`
+                      : "Захиалга олдсонгүй"}
+                  </p>
+                </div>
+                {userOrders.length > 0 && (
+                  <Button
+                    onClick={() => setShowOrders(!showOrders)}
+                    className="bg-white text-blue-600 hover:bg-blue-50 font-semibold px-4 py-2"
+                  >
+                    <Package className="h-4 w-4 mr-2" />
+                    {showOrders ? "Нуух" : "Харах"}
+                    {showOrders ? (
+                      <ChevronUp className="h-4 w-4 ml-2" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 ml-2" />
+                    )}
+                  </Button>
+                )}
+              </div>
+
+              {showOrders && userOrders.length > 0 && (
+                <div className="mt-6 space-y-4">
+                  {userOrders.map((order) => (
+                    <div
+                      key={order.id}
+                      className="bg-white/10 backdrop-blur-sm rounded-lg p-4"
+                    >
+                      <div className="flex justify-between items-start mb-3">
+                        <div>
+                          <h4 className="font-semibold text-white">
+                            Захиалга #{order.id.slice(-8)}
+                          </h4>
+                          <p className="text-blue-100 text-sm">
+                            {formatTime(order.created_at)}
+                          </p>
+                        </div>
+                        <Badge
+                          className={
+                            order.status === "delivered"
+                              ? "bg-green-500 hover:bg-green-600"
+                              : order.status === "on_delivery"
+                                ? "bg-yellow-500 hover:bg-yellow-600"
+                                : order.status === "accepted"
+                                  ? "bg-blue-500 hover:bg-blue-600"
+                                  : "bg-gray-500 hover:bg-gray-600"
+                          }
+                        >
+                          {order.status === "pending" && "Хүлээгдэж байна"}
+                          {order.status === "accepted" && "Баталгаажсан"}
+                          {order.status === "on_delivery" && "Хүргэлтэнд"}
+                          {order.status === "delivered" && "Хүргэгдсэн"}
+                        </Badge>
+                      </div>
+
+                      <div className="space-y-1 mb-3">
+                        {order.pizzas.map((item, index) => (
+                          <div
+                            key={index}
+                            className="flex justify-between text-sm"
+                          >
+                            <span className="text-blue-100">
+                              {item.pizza.name} × {item.quantity}
+                            </span>
+                            <span className="text-white font-medium">
+                              {formatPrice(item.pizza.price * item.quantity)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="flex justify-between items-center pt-2 border-t border-white/20">
+                        <span className="text-blue-100 text-sm">
+                          {order.building}, {order.floor} давхар
+                        </span>
+                        <span className="text-white font-bold">
+                          {formatPrice(order.total_price)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {loadingOrders && (
+                <div className="mt-4 text-center">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white mx-auto"></div>
+                  <p className="text-blue-100 text-sm mt-2">
+                    Захиалга ачааллаж байна...
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Login CTA for non-authenticated users */}
+          {!user && (
+            <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl p-6 mb-8 text-white text-center">
+              <h3 className="text-xl font-bold mb-2">Захиалгаа хянах уу?</h3>
+              <p className="text-blue-100 mb-4">
+                Нэвтэрснээр захиалгынхаа явцыг хянаарай
+              </p>
+              <Button
+                onClick={() => setIsLoginOpen(true)}
+                className="bg-white text-blue-600 hover:bg-blue-50 font-semibold px-6 py-2"
+              >
+                <LogIn className="h-4 w-4 mr-2" />
+                Нэвтрэх
               </Button>
-            </Link>
-          </div>
+            </div>
+          )}
         </div>
 
         {/* Category Tabs */}
@@ -304,6 +757,23 @@ export default function HomePage() {
             </div>
           </div>
         )}
+
+        {/* Delivery Zone Map */}
+        <div className="mb-8">
+          <div className="text-center mb-6">
+            <h3 className="text-2xl font-bold text-gray-900 mb-2">
+              Хүргэлтийн бүс
+            </h3>
+            <p className="text-gray-600">
+              Таны байршил хүргэлтийн бүсэд байгаа эсэхийг шалгаарай
+            </p>
+          </div>
+          <DeliveryMap
+            onLocationCheck={(isInZone, distance) => {
+              console.log("Location check:", { isInZone, distance });
+            }}
+          />
+        </div>
 
         {/* Pizza Menu Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
