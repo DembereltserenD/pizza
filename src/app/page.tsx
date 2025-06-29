@@ -43,6 +43,7 @@ import Link from "next/link";
 import LoginPage from "@/app/login/page";
 import Image from "next/image";
 import dynamic from "next/dynamic";
+import Cart from "@/components/Cart";
 
 // Dynamic import to avoid SSR issues with Leaflet
 const DeliveryMap = dynamic(() => import("@/components/DeliveryMap"), {
@@ -105,13 +106,38 @@ export default function HomePage() {
 
     setLoadingOrders(true);
     try {
-      // Get orders by phone
-      const { data: ordersData, error: ordersError } = await supabase
+      // Get current user
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      // Normalize phone number for consistent matching
+      const normalizePhone = (phoneNum: string) => {
+        const cleaned = phoneNum.replace(/[^0-9]/g, "");
+        if (cleaned.startsWith("976") && cleaned.length === 11) {
+          return cleaned.substring(3); // Remove 976 prefix for comparison
+        }
+        return cleaned;
+      };
+
+      const normalizedPhone = normalizePhone(phone);
+
+      // Build query to get orders by user_id or phone number
+      let query = supabase
         .from("orders")
         .select("*")
-        .eq("phone", phone.replace("+976", ""))
         .order("created_at", { ascending: false })
-        .limit(5); // Show only last 5 orders
+        .limit(5);
+
+      if (user) {
+        // If user is authenticated, get orders by user_id OR phone
+        query = query.or(`user_id.eq.${user.id},phone.eq.${normalizedPhone}`);
+      } else {
+        // If not authenticated, only get by phone
+        query = query.eq("phone", normalizedPhone);
+      }
+
+      const { data: ordersData, error: ordersError } = await query;
 
       if (ordersError) throw ordersError;
 
@@ -222,6 +248,20 @@ export default function HomePage() {
 
   const saveCartToStorage = (newCart: CartItem[]) => {
     localStorage.setItem("pizza-cart", JSON.stringify(newCart));
+  };
+
+  const updateQuantity = (pizzaId: string, newQuantity: number) => {
+    if (newQuantity === 0) {
+      removeFromCart(pizzaId);
+      return;
+    }
+
+    const newCart = cart.map((item) =>
+      item.id === pizzaId ? { ...item, quantity: newQuantity } : item,
+    );
+
+    setCart(newCart);
+    saveCartToStorage(newCart);
   };
 
   const addToCart = (pizza: Pizza) => {
@@ -554,24 +594,40 @@ export default function HomePage() {
                 </Dialog>
               )}
 
-              <Link href="/cart">
-                <Button className="relative bg-red-500 hover:bg-red-600 text-white px-6">
-                  <ShoppingCart className="h-4 w-4 mr-2" />
-                  Сагс
-                  {getTotalItems() > 0 && (
-                    <Badge className="absolute -top-2 -right-2 bg-yellow-500 text-black text-xs min-w-[20px] h-5 rounded-full flex items-center justify-center font-bold">
-                      {getTotalItems()}
-                    </Badge>
-                  )}
-                </Button>
-              </Link>
+              {/* Mobile Cart Button */}
+              <div className="lg:hidden">
+                <Cart
+                  cart={cart}
+                  onUpdateQuantity={updateQuantity}
+                  onRemoveFromCart={removeFromCart}
+                  isMobile={true}
+                  user={user}
+                  onLoginRequired={() => setIsLoginOpen(true)}
+                />
+              </div>
+              
+              {/* Desktop Cart Link - Hidden on mobile */}
+              <div className="hidden lg:block">
+                <Link href="/cart">
+                  <Button className="relative bg-red-500 hover:bg-red-600 text-white px-6">
+                    <ShoppingCart className="h-4 w-4 mr-2" />
+                    Сагс
+                    {getTotalItems() > 0 && (
+                      <Badge className="absolute -top-2 -right-2 bg-yellow-500 text-black text-xs min-w-[20px] h-5 rounded-full flex items-center justify-center font-bold">
+                        {getTotalItems()}
+                      </Badge>
+                    )}
+                  </Button>
+                </Link>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="flex">
+        <main className="flex-1 max-w-none lg:max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="text-center mb-8">
           <h2 className="text-4xl font-bold text-gray-900 mb-4">
             Амттай пиццаг захиалаарай
@@ -737,9 +793,9 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Cart Summary */}
+        {/* Cart Summary - Only show on mobile when cart has items */}
         {cart.length > 0 && (
-          <div className="bg-white rounded-lg shadow-md p-4 mb-6">
+          <div className="lg:hidden bg-white rounded-lg shadow-md p-4 mb-6">
             <div className="flex justify-between items-center">
               <div>
                 <span className="text-lg font-semibold">
@@ -749,11 +805,14 @@ export default function HomePage() {
                   {formatPrice(getTotalPrice())}
                 </span>
               </div>
-              <Link href="/cart">
-                <Button className="bg-red-500 hover:bg-red-600">
-                  Захиалах
-                </Button>
-              </Link>
+              <Cart
+                cart={cart}
+                onUpdateQuantity={updateQuantity}
+                onRemoveFromCart={removeFromCart}
+                isMobile={true}
+                user={user}
+                onLoginRequired={() => setIsLoginOpen(true)}
+              />
             </div>
           </div>
         )}
@@ -981,6 +1040,22 @@ export default function HomePage() {
           </div>
         </div>
       </footer>
+      </main>
+      
+      {/* Desktop Cart Sidebar */}
+      <div className="hidden lg:block w-96 flex-shrink-0">
+        <div className="sticky top-0 h-screen">
+          <Cart
+            cart={cart}
+            onUpdateQuantity={updateQuantity}
+            onRemoveFromCart={removeFromCart}
+            className="h-full"
+            user={user}
+            onLoginRequired={() => setIsLoginOpen(true)}
+          />
+        </div>
+      </div>
+      </div>
     </div>
   );
 }

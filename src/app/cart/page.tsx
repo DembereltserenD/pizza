@@ -130,6 +130,11 @@ export default function CartPage() {
     setLoading(true);
 
     try {
+      // Get current authenticated user
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
       const orderData = {
         pizza_items: cart.map((item) => ({
           pizza_id: item.id,
@@ -142,6 +147,8 @@ export default function CartPage() {
         phone: userInfo.phone,
         payment_type: paymentType,
         is_paid: paymentType === "cash", // Cash orders are immediately marked as paid
+        // Include user_id if user is authenticated
+        ...(user && { user_id: user.id }),
       };
 
       const { data, error } = await supabase

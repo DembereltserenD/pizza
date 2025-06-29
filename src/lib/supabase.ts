@@ -51,6 +51,7 @@ export interface Order {
   status: "pending" | "accepted" | "on_delivery" | "delivered";
   created_at: string;
   delivered_at: string | null;
+  user_id?: string | null; // Optional user_id for authenticated users
 }
 
 export interface UserRole {
