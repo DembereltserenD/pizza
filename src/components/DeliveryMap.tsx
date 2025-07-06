@@ -1,8 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   MapPin,
   Navigation,
@@ -11,16 +19,47 @@ import {
   CheckCircle,
   Wifi,
   Smartphone,
+  Settings,
+  HelpCircle,
+  X,
 } from "lucide-react";
 
-// Updated Mongolia coordinates - Ulaanbaatar city center
-const RESTAURANT_LOCATION = [47.9184, 106.9177] as [number, number];
+// Dynamic imports for Leaflet components to avoid SSR issues
+const MapContainer = dynamic(
+  () => import("react-leaflet").then((mod) => mod.MapContainer),
+  { ssr: false },
+);
+const TileLayer = dynamic(
+  () => import("react-leaflet").then((mod) => mod.TileLayer),
+  { ssr: false },
+);
+const Marker = dynamic(
+  () => import("react-leaflet").then((mod) => mod.Marker),
+  { ssr: false },
+);
+const Popup = dynamic(() => import("react-leaflet").then((mod) => mod.Popup), {
+  ssr: false,
+});
+const Polygon = dynamic(
+  () => import("react-leaflet").then((mod) => mod.Polygon),
+  { ssr: false },
+);
+
+// Pizza place coordinates
+const RESTAURANT_LOCATION = [47.92138235455927, 106.8195432274315] as [
+  number,
+  number,
+];
+// Delivery zone coordinates
 const DELIVERY_BOUNDARY = [
-  [47.93, 106.9],
-  [47.93, 106.93],
-  [47.9, 106.93],
-  [47.9, 106.9],
-  [47.93, 106.9], // Square delivery zone around UB center
+  [47.92140269073649, 106.81694108103707],
+  [47.921677228346944, 106.82059774156801],
+  [47.92039604036649, 106.82115913758312],
+  [47.920319778176626, 106.82044601291527],
+  [47.91970967661069, 106.82059774156801],
+  [47.919384286152884, 106.81944460380883],
+  [47.919267348462256, 106.8181169780974],
+  [47.92140269073649, 106.81694108103707], // Close the polygon
 ] as [number, number][];
 
 interface DeliveryMapProps {
@@ -49,8 +88,11 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
   const [mapCenter, setMapCenter] =
     useState<[number, number]>(RESTAURANT_LOCATION);
   const [showBoundary, setShowBoundary] = useState(true);
+  const [leafletLoaded, setLeafletLoaded] = useState(false);
   const [ipLocation, setIpLocation] = useState<LocationState | null>(null);
   const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [showLocationPermissionRequest, setShowLocationPermissionRequest] =
+    useState(false);
 
   // Point-in-polygon algorithm
   const isPointInPolygon = (
@@ -158,38 +200,31 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
       const newLocation: LocationState = {
         lat: position.coords.latitude,
         lng: position.coords.longitude,
-        address: "GPS байршил",
+        address: "Автомат байршил",
         accuracy: position.coords.accuracy,
-        source: "GPS",
+        source: "Автомат",
       };
 
       setUserLocation(newLocation);
       setLocationPermission("granted");
       checkDeliveryZone(newLocation);
-      setMapCenter([newLocation.lat, newLocation.lng]);
+      // Don't change map center to preserve restaurant marker
+      // setMapCenter([newLocation.lat, newLocation.lng]);
     } catch (error: any) {
       console.error("GPS location error:", error);
       setLocationPermission("denied");
 
-      let errorMessage = "GPS байршил авах боломжгүй. ";
-
-      if (error.code === 1) {
-        errorMessage += "Байршлын зөвшөөрөл шаардлагатай.";
-      } else if (error.code === 2) {
-        errorMessage += "GPS сигнал сул байна.";
-      } else if (error.code === 3) {
-        errorMessage += "GPS хугацаа дууссан.";
-      }
-
       // Fall back to IP location if GPS fails
       if (ipLocation) {
-        errorMessage += ` IP байршлыг ашиглаж байна.`;
-        setUserLocation({ ...ipLocation, source: "IP (GPS буруу)" });
+        setUserLocation({ ...ipLocation, source: "Ойролцоо (автомат буруу)" });
         checkDeliveryZone(ipLocation);
-        setMapCenter([ipLocation.lat, ipLocation.lng]);
+        // Don't change map center to preserve restaurant marker
       }
 
-      alert(errorMessage);
+      // Show location permission request for permission denied errors
+      if (error.code === 1) {
+        setShowLocationPermissionRequest(true);
+      }
     } finally {
       setIsGettingLocation(false);
     }
@@ -240,7 +275,15 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
 
     setUserLocation(foundLocation);
     checkDeliveryZone(foundLocation);
-    setMapCenter([foundLocation.lat, foundLocation.lng]);
+    // Don't change map center to preserve restaurant marker
+    // setMapCenter([foundLocation.lat, foundLocation.lng]);
+  };
+
+  // Request location permission directly
+  const requestLocationPermission = async () => {
+    setShowLocationPermissionRequest(false);
+    // Try to get location again, which will trigger the browser's permission prompt
+    getCurrentLocation();
   };
 
   const getEstimatedDeliveryTime = (distance: number): string => {
@@ -250,131 +293,132 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
     return "45+ минут";
   };
 
-  // Initialize IP location on mount
+  // Initialize IP location on mount and setup Leaflet
   useEffect(() => {
     getIpLocation();
+
+    // Load Leaflet icons
+    if (typeof window !== "undefined") {
+      import("leaflet").then((L) => {
+        delete (L.Icon.Default.prototype as any)._getIconUrl;
+        L.Icon.Default.mergeOptions({
+          iconRetinaUrl:
+            "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png",
+          iconUrl:
+            "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png",
+          shadowUrl:
+            "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
+        });
+        setLeafletLoaded(true);
+      });
+    }
   }, []);
 
   return (
     <div className="bg-white rounded-lg shadow-lg overflow-hidden max-w-6xl mx-auto">
       {/* Simple map visualization */}
-      <div className="relative h-96 w-full bg-gradient-to-br from-green-100 to-blue-100 flex items-center justify-center">
-        <div className="absolute inset-0 bg-green-50 opacity-50"></div>
-
-        {/* Restaurant marker */}
-        <div
-          className="absolute"
-          style={{
-            left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
-          }}
-        >
-          <div className="bg-red-500 text-white p-3 rounded-full shadow-lg">
-            🍕 Ресторан
-          </div>
-        </div>
-
-        {/* User location marker */}
-        {userLocation && (
-          <div
-            className="absolute"
-            style={{
-              left: `${50 + (userLocation.lng - RESTAURANT_LOCATION[1]) * 1000}%`,
-              top: `${50 - (userLocation.lat - RESTAURANT_LOCATION[0]) * 1000}%`,
-              transform: "translate(-50%, -50%)",
-            }}
+      <div className="relative h-96 w-full">
+        {leafletLoaded ? (
+          <MapContainer
+            center={mapCenter}
+            zoom={15}
+            style={{ height: "100%", width: "100%" }}
+            className="rounded-t-lg"
           >
-            <div
-              className={`p-2 rounded-full shadow-lg text-white ${
-                isInDeliveryZone ? "bg-green-500" : "bg-red-500"
-              }`}
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+
+            {/* Restaurant marker */}
+            <Marker position={RESTAURANT_LOCATION}>
+              <Popup>
+                <div className="text-center">
+                  <div className="text-2xl mb-2">🍕</div>
+                  <strong>Гоё Пицца</strong>
+                  <br />
+                  Ресторан
+                </div>
+              </Popup>
+            </Marker>
+
+            {/* User location marker */}
+            {userLocation && (
+              <Marker position={[userLocation.lat, userLocation.lng]}>
+                <Popup>
+                  <div className="text-center">
+                    <div className="text-2xl mb-2">
+                      {isInDeliveryZone ? "✅" : "❌"}
+                    </div>
+                    <strong>Таны байршил</strong>
+                    <br />
+                    {userLocation.address}
+                    <br />
+                    <small>
+                      {isInDeliveryZone
+                        ? "Хүргэлт хийдэг"
+                        : "Хүргэлтийн бүсээс гадуур"}
+                    </small>
+                  </div>
+                </Popup>
+              </Marker>
+            )}
+
+            {/* Delivery zone polygon */}
+            <Polygon
+              positions={DELIVERY_BOUNDARY}
+              pathOptions={{
+                color: "#f97316",
+                fillColor: "#fed7aa",
+                fillOpacity: 0.3,
+                weight: 3,
+                dashArray: "10, 10",
+              }}
             >
-              {isInDeliveryZone ? "✓" : "✗"} Та
+              <Popup>
+                <div className="text-center">
+                  <strong>Хүргэлтийн бүс</strong>
+                  <br />
+                  Энэ бүсэд бид хүргэлт хийдэг
+                </div>
+              </Popup>
+            </Polygon>
+          </MapContainer>
+        ) : (
+          <div className="h-full w-full bg-gray-100 flex items-center justify-center rounded-t-lg">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500 mx-auto mb-2"></div>
+              <p className="text-gray-600">Газрын зураг ачааллаж байна...</p>
             </div>
           </div>
         )}
-
-        {/* Delivery zone visualization */}
-        {showBoundary && (
-          <div className="absolute inset-4 border-4 border-orange-400 border-dashed rounded-lg bg-orange-100 bg-opacity-30 flex items-center justify-center">
-            <span className="text-orange-600 font-bold">Хүргэлтийн бүс</span>
-          </div>
-        )}
-
-        {/* Map controls */}
-        <div className="absolute top-4 right-4 space-y-2">
-          <Button
-            onClick={() => setShowBoundary(!showBoundary)}
-            variant="outline"
-            size="sm"
-            className="bg-white shadow-md"
-          >
-            {showBoundary ? "Бүс нуух" : "Бүс харуулах"}
-          </Button>
-        </div>
       </div>
 
       {/* Controls Panel */}
       <div className="p-6 space-y-4">
-        {/* Debug Information */}
-        {debugInfo && (
-          <Card className="bg-blue-50 border-blue-200">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Wifi className="h-4 w-4" />
-                Сүлжээний мэдээлэл
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 text-xs">
-              <div className="grid grid-cols-2 gap-2">
-                <div>IP хаяг: {debugInfo.ip}</div>
-                <div>Хот: {debugInfo.city || "Тодорхойгүй"}</div>
-                <div>Улс: {debugInfo.country_name}</div>
-                <div>ISP: {debugInfo.org}</div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Location comparison */}
-        {ipLocation && userLocation && userLocation.source === "GPS" && (
-          <Card className="bg-yellow-50 border-yellow-200">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Байршлын харьцуулалт</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 text-sm">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="font-medium flex items-center gap-1">
-                    <Wifi className="h-3 w-3" /> IP байршил:
-                  </p>
-                  <p className="text-xs">{ipLocation.address}</p>
-                  <p className="text-xs text-gray-500">
-                    {ipLocation.lat.toFixed(4)}, {ipLocation.lng.toFixed(4)}
-                  </p>
-                </div>
-                <div>
-                  <p className="font-medium flex items-center gap-1">
-                    <Smartphone className="h-3 w-3" /> GPS байршил:
-                  </p>
-                  <p className="text-xs">{userLocation.address}</p>
-                  <p className="text-xs text-gray-500">
-                    {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
-                  </p>
-                  {userLocation.accuracy && (
-                    <p className="text-xs text-gray-500">
-                      Нарийвчлал: ±{Math.round(userLocation.accuracy)}м
-                    </p>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
         {/* Location Controls */}
         <div className="space-y-3">
+          {/* Show location permission request button if permission was denied */}
+          {locationPermission === "denied" && (
+            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 text-yellow-600" />
+                  <span className="text-sm text-yellow-700">
+                    Байршлын зөвшөөрөл хэрэгтэй
+                  </span>
+                </div>
+                <Button
+                  onClick={() => setShowLocationPermissionRequest(true)}
+                  size="sm"
+                  className="bg-yellow-500 hover:bg-yellow-600 text-white"
+                >
+                  Зөвшөөрөх
+                </Button>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row gap-3">
             <Button
               onClick={getCurrentLocation}
@@ -382,7 +426,9 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
               className="flex-1 bg-blue-500 hover:bg-blue-600"
             >
               <Navigation className="h-4 w-4 mr-2" />
-              {isGettingLocation ? "GPS байршил авч байна..." : "GPS байршил"}
+              {isGettingLocation
+                ? "Байршил тодорхойлж байна..."
+                : "Миний байршил"}
             </Button>
 
             <div className="flex flex-1 gap-2">
@@ -437,8 +483,16 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
                   <p className="font-semibold">{distance?.toFixed(2)} км</p>
                 </div>
                 <div>
-                  <p className="text-gray-600">Байршлын эх үүсвэр:</p>
-                  <p className="font-semibold">{userLocation.source}</p>
+                  <p className="text-gray-600">Байршлын төрөл:</p>
+                  <p className="font-semibold">
+                    {userLocation.source === "GPS"
+                      ? "Автомат"
+                      : userLocation.source === "Manual input"
+                        ? "Гараар оруулсан"
+                        : userLocation.source === "IP-based"
+                          ? "Ойролцоо"
+                          : userLocation.source}
+                  </p>
                 </div>
                 {isInDeliveryZone && distance && (
                   <div>
@@ -451,53 +505,145 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
               </div>
 
               {!isInDeliveryZone && (
-                <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                  <p className="text-sm text-yellow-800">
-                    <strong>Анхаар:</strong> Таны байршил хүргэлтийн бүсээс
-                    гадуур байна. GPS-ээр дахин шалгаж үзнэ үү.
-                  </p>
+                <div className="mt-4 space-y-3">
+                  <div className="p-4 bg-orange-50 border border-orange-200 rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <div className="text-2xl">📞</div>
+                      <div>
+                        <h4 className="font-semibold text-orange-800 mb-2">
+                          Хүргэлтийн бүсээс гадуур байна
+                        </h4>
+                        <p className="text-sm text-orange-700 mb-3">
+                          Таны байршил хүргэлтийн бүсээс гадуур байгаа тул бид
+                          танд хүргэх боломжгүй байна.
+                        </p>
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-orange-800">
+                            Та дараах аргуудыг туршиж үзнэ үү:
+                          </p>
+                          <ul className="text-sm text-orange-700 space-y-1 ml-4">
+                            <li>
+                              • Дээрх "Миний байршил" товчийг дарж дахин шалгах
+                            </li>
+                            <li>• Хаягаа гараар оруулж шалгах</li>
+                            <li>
+                              • Бидэнтэй утсаар холбогдох:{" "}
+                              <strong>+976 1234-5678</strong>
+                            </li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </CardContent>
           </Card>
         )}
 
-        {/* Information */}
-        <Card className="bg-gray-50">
+        {/* Service Information */}
+        <Card className="bg-gradient-to-r from-orange-50 to-red-50 border-orange-200">
           <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <MapPin className="h-5 w-5 text-orange-600" />
-              Байршлын мэдээлэл
+            <CardTitle className="text-lg flex items-center gap-2 text-orange-800">
+              <MapPin className="h-5 w-5" />
+              Хүргэлтийн үйлчилгээ
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            <div className="text-sm space-y-2">
-              <p>
-                <strong>GPS:</strong> Хамгийн нарийвчлалтай, гэхдээ барилга
-                дотор ажиллахгүй байж болно
-              </p>
-              <p>
-                <strong>IP байршил:</strong> Интернет үйлчилгээ үзүүлэгчийн
-                байршил, бодит байршилтай ялгаатай байж болно
-              </p>
-              <p>
-                <strong>Гарын ороход:</strong> Монгол Улсын дүүргийн нэр
-                ашиглана уу
-              </p>
+          <CardContent className="pt-0">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+              <div className="text-center p-3 bg-white rounded-lg shadow-sm">
+                <div className="text-2xl mb-2">🕐</div>
+                <p className="font-semibold text-gray-800">Ажиллах цаг</p>
+                <p className="text-gray-600">10:00 - 22:00</p>
+                <p className="text-xs text-gray-500 mt-1">Өдөр бүр</p>
+              </div>
+              <div className="text-center p-3 bg-white rounded-lg shadow-sm">
+                <div className="text-2xl mb-2">🚗</div>
+                <p className="font-semibold text-gray-800">Хүргэх хугацаа</p>
+                <p className="text-gray-600">20-45 минут</p>
+                <p className="text-xs text-gray-500 mt-1">Зайнаас хамаарна</p>
+              </div>
+              <div className="text-center p-3 bg-white rounded-lg shadow-sm">
+                <div className="text-2xl mb-2">📞</div>
+                <p className="font-semibold text-gray-800">Холбоо барих</p>
+                <p className="text-gray-600">+976 1234-5678</p>
+                <p className="text-xs text-gray-500 mt-1">Тусламж авах</p>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 text-sm pt-3 border-t">
-              <div>
-                <p className="text-gray-600">Хүргэлтийн цаг:</p>
-                <p className="font-medium">10:00 - 22:00</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Холбоо барих:</p>
-                <p className="font-medium">+976 1234-5678</p>
+            <div className="mt-4 p-3 bg-white rounded-lg border border-orange-200">
+              <h4 className="font-semibold text-orange-800 mb-2 flex items-center gap-2">
+                <CheckCircle className="h-4 w-4" />
+                Байршил тодорхойлох арга:
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="font-medium text-gray-700">
+                    📍 Автомат байршил
+                  </p>
+                  <p className="text-gray-600 text-xs">
+                    Хамгийн нарийвчлалтай арга
+                  </p>
+                </div>
+                <div>
+                  <p className="font-medium text-gray-700">✍️ Хаяг бичих</p>
+                  <p className="text-gray-600 text-xs">
+                    Дүүргийн нэр ашиглана уу
+                  </p>
+                </div>
               </div>
             </div>
           </CardContent>
         </Card>
+
+        {/* Location Permission Request Dialog */}
+        <Dialog
+          open={showLocationPermissionRequest}
+          onOpenChange={setShowLocationPermissionRequest}
+        >
+          <DialogContent className="max-w-sm mx-auto z-[9999]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-lg text-center">
+                <Navigation className="h-5 w-5 text-blue-600" />
+                Байршлын зөвшөөрөл
+              </DialogTitle>
+              <DialogDescription className="text-center">
+                Хүргэлтийн бүсийг шалгахын тулд таны байршил шаардлагатай.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-center">
+                <div className="text-4xl mb-3">📍</div>
+                <p className="text-sm text-blue-700">
+                  Таны байршлыг тодорхойлж, хүргэлтийн бүсэд байгаа эсэхийг
+                  шалгана.
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  onClick={requestLocationPermission}
+                  className="flex-1 bg-blue-500 hover:bg-blue-600"
+                >
+                  <Navigation className="h-4 w-4 mr-2" />
+                  Байршил зөвшөөрөх
+                </Button>
+                <Button
+                  onClick={() => setShowLocationPermissionRequest(false)}
+                  variant="outline"
+                  className="flex-1"
+                >
+                  Болих
+                </Button>
+              </div>
+
+              <p className="text-xs text-gray-500 text-center">
+                Хэрэв зөвшөөрөл өгөхгүй бол хаягаа гараар оруулж болно.
+              </p>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );
