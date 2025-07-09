@@ -93,6 +93,7 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [showLocationPermissionRequest, setShowLocationPermissionRequest] =
     useState(false);
+  const [userDismissedDialog, setUserDismissedDialog] = useState(false);
 
   // Point-in-polygon algorithm
   const isPointInPolygon = (
@@ -174,11 +175,69 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
     return null;
   };
 
+  // Check current permission status with HTTPS detection
+  const checkPermissionStatus = async () => {
+    // Check if we're on HTTPS
+    const isSecure =
+      window.location.protocol === "https:" ||
+      window.location.hostname === "localhost";
+
+    if (!isSecure) {
+      console.warn("Geolocation requires HTTPS in production");
+      return "requires-https";
+    }
+
+    if (!navigator.permissions) {
+      return "unknown";
+    }
+
+    try {
+      const permission = await navigator.permissions.query({
+        name: "geolocation",
+      });
+      return permission.state;
+    } catch (error) {
+      console.log("Permission query not supported");
+      return "unknown";
+    }
+  };
+
   // Get GPS location with enhanced error handling
   const getCurrentLocation = async () => {
     if (!navigator.geolocation) {
       alert("Таны хөтөч байршлын үйлчилгээг дэмждэггүй.");
       return;
+    }
+
+    // Check permission status first
+    const permissionStatus = await checkPermissionStatus();
+    console.log("Current permission status:", permissionStatus);
+
+    // Handle HTTPS requirement
+    if (permissionStatus === "requires-https") {
+      setLocationPermission("requires-https");
+      // Only show dialog if user hasn't dismissed it before
+      if (!userDismissedDialog) {
+        setShowLocationPermissionRequest(true);
+      }
+      return;
+    }
+
+    // If permission is already granted, don't show the dialog
+    if (permissionStatus === "granted") {
+      setLocationPermission("granted");
+      setShowLocationPermissionRequest(false);
+    } else if (permissionStatus === "denied") {
+      setLocationPermission("denied");
+      // Only show dialog if user hasn't dismissed it before
+      if (!userDismissedDialog) {
+        setShowLocationPermissionRequest(true);
+      }
+      return;
+    } else if (permissionStatus === "prompt") {
+      // Permission will be requested when we call getCurrentPosition
+      setLocationPermission("prompt");
+      setShowLocationPermissionRequest(false);
     }
 
     setIsGettingLocation(true);
@@ -207,23 +266,40 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
 
       setUserLocation(newLocation);
       setLocationPermission("granted");
+      setShowLocationPermissionRequest(false); // Hide dialog on success
       checkDeliveryZone(newLocation);
       // Don't change map center to preserve restaurant marker
       // setMapCenter([newLocation.lat, newLocation.lng]);
     } catch (error: any) {
       console.error("GPS location error:", error);
-      setLocationPermission("denied");
+
+      // Handle different error types
+      if (error.code === 1) {
+        // PERMISSION_DENIED
+        setLocationPermission("denied");
+        // Only show dialog if user hasn't dismissed it before
+        if (!userDismissedDialog) {
+          setShowLocationPermissionRequest(true);
+        }
+      } else if (error.code === 2) {
+        // POSITION_UNAVAILABLE
+        setLocationPermission("granted"); // Permission was given but location unavailable
+        setShowLocationPermissionRequest(false);
+        alert("Байршил тодорхойлох боломжгүй. Интернет холболтоо шалгана уу.");
+      } else if (error.code === 3) {
+        // TIMEOUT
+        setLocationPermission("granted"); // Permission was given but timed out
+        setShowLocationPermissionRequest(false);
+        alert("Байршил тодорхойлоход хэт удаж байна. Дахин оролдоно уу.");
+      } else {
+        setLocationPermission("unknown");
+      }
 
       // Fall back to IP location if GPS fails
       if (ipLocation) {
         setUserLocation({ ...ipLocation, source: "Ойролцоо (автомат буруу)" });
         checkDeliveryZone(ipLocation);
         // Don't change map center to preserve restaurant marker
-      }
-
-      // Show location permission request for permission denied errors
-      if (error.code === 1) {
-        setShowLocationPermissionRequest(true);
       }
     } finally {
       setIsGettingLocation(false);
@@ -282,8 +358,21 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
   // Request location permission directly
   const requestLocationPermission = async () => {
     setShowLocationPermissionRequest(false);
-    // Try to get location again, which will trigger the browser's permission prompt
-    getCurrentLocation();
+    setUserDismissedDialog(false); // Reset dismissal state when user actively tries again
+
+    // Reset permission state and try again
+    setLocationPermission(null);
+
+    // Small delay to ensure dialog closes before permission prompt
+    setTimeout(() => {
+      getCurrentLocation();
+    }, 100);
+  };
+
+  // Handle dialog dismissal
+  const handleDialogDismiss = () => {
+    setShowLocationPermissionRequest(false);
+    setUserDismissedDialog(true); // Remember that user dismissed the dialog
   };
 
   const getEstimatedDeliveryTime = (distance: number): string => {
@@ -296,6 +385,19 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
   // Initialize IP location on mount and setup Leaflet
   useEffect(() => {
     getIpLocation();
+
+    // Check initial permission status
+    checkPermissionStatus().then((status) => {
+      console.log("Initial permission status:", status);
+      if (status === "granted") {
+        setLocationPermission("granted");
+        setShowLocationPermissionRequest(false);
+      } else if (status === "denied") {
+        setLocationPermission("denied");
+      } else if (status === "requires-https") {
+        setLocationPermission("requires-https");
+      }
+    });
 
     // Load Leaflet icons
     if (typeof window !== "undefined") {
@@ -398,7 +500,7 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
       <div className="p-6 space-y-4">
         {/* Location Controls */}
         <div className="space-y-3">
-          {/* Show location permission request button if permission was denied */}
+          {/* Show location permission request button if permission was denied or HTTPS required */}
           {locationPermission === "denied" && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
               <div className="flex items-center justify-between">
@@ -409,12 +511,37 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
                   </span>
                 </div>
                 <Button
-                  onClick={() => setShowLocationPermissionRequest(true)}
+                  onClick={() => {
+                    setUserDismissedDialog(false); // Reset dismissal when user actively clicks
+                    setShowLocationPermissionRequest(true);
+                  }}
                   size="sm"
                   className="bg-yellow-500 hover:bg-yellow-600 text-white"
                 >
                   Зөвшөөрөх
                 </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Show HTTPS requirement warning */}
+          {locationPermission === "requires-https" && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-800 mb-1">
+                    HTTPS холболт шаардлагатай
+                  </p>
+                  <p className="text-sm text-red-700 mb-2">
+                    Байршил тодорхойлохын тулд аюулгүй (HTTPS) холболт хэрэгтэй.
+                    Одоогийн хаяг: {window.location.protocol}//
+                    {window.location.host}
+                  </p>
+                  <p className="text-xs text-red-600">
+                    Хаягаа гараар оруулж эсвэл админтай холбогдоно уу.
+                  </p>
+                </div>
               </div>
             </div>
           )}
@@ -541,65 +668,16 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
           </Card>
         )}
 
-        {/* Service Information */}
-        <Card className="bg-gradient-to-r from-orange-50 to-red-50 border-orange-200">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2 text-orange-800">
-              <MapPin className="h-5 w-5" />
-              Хүргэлтийн үйлчилгээ
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-              <div className="text-center p-3 bg-white rounded-lg shadow-sm">
-                <div className="text-2xl mb-2">🕐</div>
-                <p className="font-semibold text-gray-800">Ажиллах цаг</p>
-                <p className="text-gray-600">10:00 - 22:00</p>
-                <p className="text-xs text-gray-500 mt-1">Өдөр бүр</p>
-              </div>
-              <div className="text-center p-3 bg-white rounded-lg shadow-sm">
-                <div className="text-2xl mb-2">🚗</div>
-                <p className="font-semibold text-gray-800">Хүргэх хугацаа</p>
-                <p className="text-gray-600">20-45 минут</p>
-                <p className="text-xs text-gray-500 mt-1">Зайнаас хамаарна</p>
-              </div>
-              <div className="text-center p-3 bg-white rounded-lg shadow-sm">
-                <div className="text-2xl mb-2">📞</div>
-                <p className="font-semibold text-gray-800">Холбоо барих</p>
-                <p className="text-gray-600">+976 1234-5678</p>
-                <p className="text-xs text-gray-500 mt-1">Тусламж авах</p>
-              </div>
-            </div>
-
-            <div className="mt-4 p-3 bg-white rounded-lg border border-orange-200">
-              <h4 className="font-semibold text-orange-800 mb-2 flex items-center gap-2">
-                <CheckCircle className="h-4 w-4" />
-                Байршил тодорхойлох арга:
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                <div>
-                  <p className="font-medium text-gray-700">
-                    📍 Автомат байршил
-                  </p>
-                  <p className="text-gray-600 text-xs">
-                    Хамгийн нарийвчлалтай арга
-                  </p>
-                </div>
-                <div>
-                  <p className="font-medium text-gray-700">✍️ Хаяг бичих</p>
-                  <p className="text-gray-600 text-xs">
-                    Дүүргийн нэр ашиглана уу
-                  </p>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         {/* Location Permission Request Dialog */}
         <Dialog
           open={showLocationPermissionRequest}
-          onOpenChange={setShowLocationPermissionRequest}
+          onOpenChange={(open) => {
+            if (!open) {
+              handleDialogDismiss();
+            } else {
+              setShowLocationPermissionRequest(open);
+            }
+          }}
         >
           <DialogContent className="max-w-sm mx-auto z-[9999]">
             <DialogHeader>
@@ -613,34 +691,80 @@ const DeliveryMap: React.FC<DeliveryMapProps> = ({ onLocationCheck }) => {
             </DialogHeader>
 
             <div className="space-y-4">
-              <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-center">
-                <div className="text-4xl mb-3">📍</div>
-                <p className="text-sm text-blue-700">
-                  Таны байршлыг тодорхойлж, хүргэлтийн бүсэд байгаа эсэхийг
-                  шалгана.
-                </p>
-              </div>
+              {locationPermission === "requires-https" ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-center">
+                    <div className="text-4xl mb-3">🔒</div>
+                    <h4 className="font-semibold text-red-800 mb-2">
+                      HTTPS холболт шаардлагатай
+                    </h4>
+                    <p className="text-sm text-red-700 mb-3">
+                      Хөтчийн аюулгүйн шаардлагын улмаас байршил тодорхойлоход
+                      аюулгүй холболт (HTTPS) хэрэгтэй.
+                    </p>
+                    <div className="text-xs text-red-600 space-y-1">
+                      <p>
+                        <strong>Одоогийн хаяг:</strong>{" "}
+                        {window.location.protocol}//{window.location.host}
+                      </p>
+                      <p>
+                        <strong>Шаардлагатай:</strong> https://
+                        {window.location.host}
+                      </p>
+                    </div>
+                  </div>
 
-              <div className="flex gap-2">
-                <Button
-                  onClick={requestLocationPermission}
-                  className="flex-1 bg-blue-500 hover:bg-blue-600"
-                >
-                  <Navigation className="h-4 w-4 mr-2" />
-                  Байршил зөвшөөрөх
-                </Button>
-                <Button
-                  onClick={() => setShowLocationPermissionRequest(false)}
-                  variant="outline"
-                  className="flex-1"
-                >
-                  Болих
-                </Button>
-              </div>
+                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <h5 className="font-medium text-yellow-800 mb-2">
+                      Шийдлийн арга:
+                    </h5>
+                    <ul className="text-sm text-yellow-700 space-y-1">
+                      <li>• Хаягаа гараар оруулах</li>
+                      <li>• Админтай холбогдож HTTPS тохируулах</li>
+                      <li>• Localhost дээр туршиж үзэх</li>
+                    </ul>
+                  </div>
 
-              <p className="text-xs text-gray-500 text-center">
-                Хэрэв зөвшөөрөл өгөхгүй бол хаягаа гараар оруулж болно.
-              </p>
+                  <Button
+                    onClick={handleDialogDismiss}
+                    className="w-full"
+                    variant="outline"
+                  >
+                    Ойлголоо
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-center">
+                    <div className="text-4xl mb-3">📍</div>
+                    <p className="text-sm text-blue-700">
+                      Таны байршлыг тодорхойлж, хүргэлтийн бүсэд байгаа эсэхийг
+                      шалгана.
+                    </p>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={requestLocationPermission}
+                      className="flex-1 bg-blue-500 hover:bg-blue-600"
+                    >
+                      <Navigation className="h-4 w-4 mr-2" />
+                      Байршил зөвшөөрөх
+                    </Button>
+                    <Button
+                      onClick={handleDialogDismiss}
+                      variant="outline"
+                      className="flex-1"
+                    >
+                      Болих
+                    </Button>
+                  </div>
+
+                  <p className="text-xs text-gray-500 text-center">
+                    Хэрэв зөвшөөрөл өгөхгүй бол хаягаа гараар оруулж болно.
+                  </p>
+                </div>
+              )}
             </div>
           </DialogContent>
         </Dialog>

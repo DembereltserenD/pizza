@@ -44,6 +44,7 @@ import LoginPage from "@/app/login/page";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import Cart from "@/components/Cart";
+import PhoneAuthDebug from "@/components/PhoneAuthDebug";
 
 // Dynamic import to avoid SSR issues with Leaflet
 const DeliveryMap = dynamic(() => import("@/components/DeliveryMap"), {
@@ -330,19 +331,38 @@ export default function HomePage() {
         }
       }
 
+      console.log("Attempting to send SMS to:", formattedPhone);
+
       const { error } = await supabase.auth.signInWithOtp({
         phone: formattedPhone,
       });
 
       if (error) {
-        setLoginError(
-          "SMS илгээхэд алдаа гарлаа. Утасны дугаараа шалгаад дахин оролдоно уу.",
-        );
+        console.error("Supabase phone auth error:", error);
+
+        // Provide more specific error messages
+        if (error.message.includes("Phone provider not configured")) {
+          setLoginError(
+            "SMS үйлчилгээ тохируулагдаагүй байна. Админтай холбогдоно уу.",
+          );
+        } else if (error.message.includes("Invalid phone number")) {
+          setLoginError("Утасны дугаар буруу байна. Зөв форматаар оруулна уу.");
+        } else if (error.message.includes("Phone authentication is disabled")) {
+          setLoginError(
+            "Утасны баталгаажуулалт идэвхгүй байна. Админтай холбогдоно уу.",
+          );
+        } else {
+          setLoginError(
+            `SMS илгээхэд алдаа гарлаа: ${error.message}. Утасны дугаараа шалгаад дахин оролдоно уу.`,
+          );
+        }
       } else {
         setIsVerificationStep(true);
         setLoginError("");
+        console.log("SMS sent successfully to:", formattedPhone);
       }
     } catch (err) {
+      console.error("Phone login error:", err);
       setLoginError("Системийн алдаа гарлаа. Дахин оролдоно уу.");
     } finally {
       setIsLoggingIn(false);
@@ -772,6 +792,11 @@ export default function HomePage() {
                 </Button>
               </div>
             )}
+
+            {/* Phone Auth Debug Panel - Remove this after fixing the issue */}
+            <div className="mb-8 flex justify-center">
+              <PhoneAuthDebug />
+            </div>
           </div>
 
           {/* Category Tabs */}
