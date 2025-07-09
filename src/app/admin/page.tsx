@@ -98,8 +98,10 @@ interface OrderStats {
 interface UserWithRole {
   id: string;
   email: string;
-  role: "admin" | "delivery";
+  phone?: string;
+  role: "admin" | "delivery" | "customer";
   created_at: string;
+  last_sign_in_at?: string;
 }
 
 // Debug logging helper for admin dashboard
@@ -111,6 +113,8 @@ function AdminDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [pizzas, setPizzas] = useState<Pizza[]>([]);
   const [users, setUsers] = useState<UserWithRole[]>([]);
+  const [customers, setCustomers] = useState<UserWithRole[]>([]);
+  const [showCustomersDialog, setShowCustomersDialog] = useState(false);
   const [stats, setStats] = useState<OrderStats>({
     totalOrders: 0,
     totalRevenue: 0,
@@ -224,19 +228,39 @@ function AdminDashboard() {
             adminDebugLog("User roles fetched successfully", {
               count: rolesData?.length || 0,
             });
-            const usersWithRoles = usersData.users.map((user) => {
+            // Separate staff users (admin/delivery) from customers
+            const staffUsers: UserWithRole[] = [];
+            const customerUsers: UserWithRole[] = [];
+
+            usersData.users.forEach((user) => {
               const userRole = rolesData?.find((role) => role.id === user.id);
-              return {
+              const userData: UserWithRole = {
                 id: user.id,
                 email: user.email || "",
-                role: userRole?.role || ("delivery" as "admin" | "delivery"),
+                phone: user.phone || "",
+                role: userRole?.role || "customer",
                 created_at: user.created_at,
+                last_sign_in_at: user.last_sign_in_at,
               };
+
+              if (
+                userRole &&
+                (userRole.role === "admin" || userRole.role === "delivery")
+              ) {
+                staffUsers.push(userData);
+              } else {
+                // This is a customer (phone auth users or users without roles)
+                customerUsers.push({ ...userData, role: "customer" });
+              }
             });
-            adminDebugLog("Users with roles processed", {
-              usersWithRoles: usersWithRoles.length,
+
+            adminDebugLog("Users processed", {
+              staffUsers: staffUsers.length,
+              customerUsers: customerUsers.length,
             });
-            setUsers(usersWithRoles);
+
+            setUsers(staffUsers);
+            setCustomers(customerUsers);
           }
         }
       } catch (adminError) {
@@ -810,15 +834,13 @@ function AdminDashboard() {
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-gray-600 mb-1">
-                      Идэвхтэй ажилчид
-                    </p>
+                    <p className="text-sm text-gray-600 mb-1">Нийт хэрэглэгч</p>
                     <p className="text-3xl font-bold text-gray-900">
-                      {users.length}
+                      {users.length + customers.length}
                     </p>
                     <p className="text-sm text-gray-500 mt-1">
                       {users.filter((u) => u.role === "delivery").length}{" "}
-                      хүргэлтийн ажилтан
+                      ажилтан, {customers.length} үйлчлүүлэгч
                     </p>
                   </div>
                   <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
@@ -1107,11 +1129,9 @@ function AdminDashboard() {
                 <div>
                   <CardTitle className="flex items-center">
                     <Users className="h-5 w-5 mr-2" />
-                    Хэрэглэгчийн удирдлага
+                    Ажилтны удирдлага
                   </CardTitle>
-                  <CardDescription>
-                    Нийт {users.length} хэрэглэгч
-                  </CardDescription>
+                  <CardDescription>Нийт {users.length} ажилтан</CardDescription>
                 </div>
                 <Dialog open={showUserDialog} onOpenChange={setShowUserDialog}>
                   <DialogTrigger asChild>
@@ -1208,6 +1228,7 @@ function AdminDashboard() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>И-мэйл</TableHead>
+                    <TableHead>Утас</TableHead>
                     <TableHead>Эрх</TableHead>
                     <TableHead>Үүсгэсэн огноо</TableHead>
                     <TableHead>Үйлдэл</TableHead>
@@ -1217,7 +1238,10 @@ function AdminDashboard() {
                   {users.map((user) => (
                     <TableRow key={user.id}>
                       <TableCell className="font-medium">
-                        {user.email}
+                        {user.email || "-"}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {user.phone || "-"}
                       </TableCell>
                       <TableCell>
                         <Badge
@@ -1255,7 +1279,181 @@ function AdminDashboard() {
               </Table>
               {users.length === 0 && (
                 <div className="text-center py-8 text-gray-500">
-                  Хэрэглэгч олдсонгүй
+                  Ажилтан олдсонгүй
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Customer Management */}
+          <Card className="bg-white mb-6">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle className="flex items-center">
+                    <Phone className="h-5 w-5 mr-2" />
+                    Үйлчлүүлэгчийн мэдээлэл
+                  </CardTitle>
+                  <CardDescription>
+                    Нийт {customers.length} үйлчлүүлэгч (утсаар нэвтэрсэн)
+                  </CardDescription>
+                </div>
+                <Dialog
+                  open={showCustomersDialog}
+                  onOpenChange={setShowCustomersDialog}
+                >
+                  <DialogTrigger asChild>
+                    <Button variant="outline">
+                      <Users className="h-4 w-4 mr-2" />
+                      Дэлгэрэнгүй харах
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Үйлчлүүлэгчийн жагсаалт</DialogTitle>
+                      <DialogDescription>
+                        Утасны дугаараар нэвтэрсэн үйлчлүүлэгчид
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="mt-4">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Утасны дугаар</TableHead>
+                            <TableHead>И-мэйл</TableHead>
+                            <TableHead>Анх нэвтэрсэн</TableHead>
+                            <TableHead>Сүүлд нэвтэрсэн</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {customers.map((customer) => (
+                            <TableRow key={customer.id}>
+                              <TableCell className="font-medium">
+                                <div className="flex items-center">
+                                  <Phone className="h-4 w-4 mr-2 text-green-600" />
+                                  {customer.phone || "-"}
+                                </div>
+                              </TableCell>
+                              <TableCell>{customer.email || "-"}</TableCell>
+                              <TableCell className="text-sm">
+                                {formatTime(customer.created_at)}
+                              </TableCell>
+                              <TableCell className="text-sm">
+                                {customer.last_sign_in_at
+                                  ? formatTime(customer.last_sign_in_at)
+                                  : "-"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                      {customers.length === 0 && (
+                        <div className="text-center py-8 text-gray-500">
+                          <Phone className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                          <p className="text-lg">Үйлчлүүлэгч олдсонгүй</p>
+                          <p className="text-sm">
+                            Утсаар нэвтэрсэн үйлчлүүлэгч байхгүй байна
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {customers.length > 0 ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-blue-50 p-4 rounded-lg">
+                      <div className="flex items-center">
+                        <Phone className="h-8 w-8 text-blue-600 mr-3" />
+                        <div>
+                          <p className="text-2xl font-bold text-blue-900">
+                            {customers.length}
+                          </p>
+                          <p className="text-sm text-blue-600">
+                            Нийт үйлчлүүлэгч
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-green-50 p-4 rounded-lg">
+                      <div className="flex items-center">
+                        <Activity className="h-8 w-8 text-green-600 mr-3" />
+                        <div>
+                          <p className="text-2xl font-bold text-green-900">
+                            {
+                              customers.filter((c) => {
+                                if (!c.last_sign_in_at) return false;
+                                const lastSignIn = new Date(c.last_sign_in_at);
+                                const weekAgo = new Date();
+                                weekAgo.setDate(weekAgo.getDate() - 7);
+                                return lastSignIn > weekAgo;
+                              }).length
+                            }
+                          </p>
+                          <p className="text-sm text-green-600">
+                            7 хоногт идэвхтэй
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded-lg">
+                      <div className="flex items-center">
+                        <Clock className="h-8 w-8 text-purple-600 mr-3" />
+                        <div>
+                          <p className="text-2xl font-bold text-purple-900">
+                            {
+                              customers.filter((c) => {
+                                const created = new Date(c.created_at);
+                                const today = new Date();
+                                return (
+                                  created.toDateString() ===
+                                  today.toDateString()
+                                );
+                              }).length
+                            }
+                          </p>
+                          <p className="text-sm text-purple-600">
+                            Өнөөдөр бүртгүүлсэн
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <h4 className="font-semibold text-gray-900 mb-3">
+                      Сүүлийн 5 үйлчлүүлэгч
+                    </h4>
+                    <div className="space-y-2">
+                      {customers.slice(0, 5).map((customer) => (
+                        <div
+                          key={customer.id}
+                          className="flex items-center justify-between bg-white p-3 rounded border"
+                        >
+                          <div className="flex items-center">
+                            <Phone className="h-4 w-4 text-green-600 mr-2" />
+                            <span className="font-medium">
+                              {customer.phone || "Утас байхгүй"}
+                            </span>
+                          </div>
+                          <span className="text-sm text-gray-500">
+                            {formatTime(customer.created_at)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <Phone className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                  <p className="text-lg">Үйлчлүүлэгч олдсонгүй</p>
+                  <p className="text-sm">
+                    Утсаар нэвтэрсэн үйлчлүүлэгч байхгүй байна
+                  </p>
                 </div>
               )}
             </CardContent>
